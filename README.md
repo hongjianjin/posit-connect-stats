@@ -46,15 +46,21 @@ A Shiny dashboard that shows how the Shiny apps on the IBEX Posit Connect server
 ## Using the dashboard
 
 - **Time Period** (This Month, Year to Date, Last 6 Months, Last 1 Year, All Time) filters all charts. Data is fetched for the last 1095 days, which is the limit for "All Time".
-- **By Date** shows visits per day for the selected period.
-- **By App / By Viewer / By Owner** show the top 20. Click a bar to focus the other charts on that app, viewer or owner. Visits shorter than 5 seconds and visits by an app's own developer are excluded.
-- Drag across **By Date** to zoom in on specific days.
+- The top row is split 2/3 + 1/3:
+  - **By Date** (left, 2/3) shows visits per day.
+    - For periods other than All Time it is a bar chart with bars colored by month. Drag across it to zoom in on specific days.
+    - For **All Time** it is a stacked bar chart over January to December, with one segment per year: the earliest year is at the bottom and the current year on top.
+  - **Overview** (right, 1/3) shows vertical bars.
+    - **By Month** for periods other than All Time, using the same month colors as By Date.
+    - **By Year** for All Time.
+- **By App / By Viewer / By Owner** show the top 20. Click a bar to focus the date and overview charts, and the other panels, on that app, viewer or owner; the overview title shows the selection. Visits shorter than 5 seconds and visits by an app's own developer are excluded.
 - **Reset** returns to the default view. **Help** shows these instructions.
 - New data is fetched from the server on the first visit each day.
+- Value labels and animations are turned off on the By Date chart to keep it fast.
 
 ### Top 50 user list (admins only)
 
-For users listed in `STATS_ADMIN`, a **Top 50 user lists** panel appears below the charts with one entry per app in the selected period. Click **[download top 50 user list]** for an app, then **Download CSV** in the dialog. The file contains username, email, name, number of sessions and total minutes, sorted by time spent.
+For users listed in `STATS_ADMIN`, a **Top 50 user lists** panel appears below the charts with one entry per app in the selected period. Click **[download top 50 user list]** for an app to open a dialog, then click **Download CSV**. The file contains username, email, name, number of sessions and total minutes, sorted by time spent, for the selected period.
 
 An admin is identified by their Connect login, so the app must require login in Connect's access settings. When running locally nobody is logged in, so use `STATS_ADMIN=*` to test.
 

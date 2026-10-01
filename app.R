@@ -105,8 +105,14 @@ ui <- dashboardPage(
       )
     ),
     fluidRow(
-      shinycssloaders::withSpinner(
-        apexchartOutput("shiny_time")
+      # By Date takes 2/3 of the width; the overview (By Year / By Month) takes 1/3
+      div(id = "dateMain", class = "col-sm-8",
+        shinycssloaders::withSpinner(
+          apexchartOutput("shiny_time")
+        )
+      ),
+      div(id = "dateOverview", class = "col-sm-4",
+        apexchartOutput("shiny_year")
       )
     ),
     fluidRow(
@@ -162,6 +168,67 @@ period_bounds <- function(period, today, earliest) {
     seq(today, by = "-6 month", length.out = 2)[2]
   )
   list(from = max(as.Date(from), earliest), to = today)
+}
+
+# One fixed color per calendar month (Jan..Dec), shared by the By Date chart and the
+# By Month overview so the same month has the same color in both.
+month_colors <- c("#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F", "#EDC948",
+                  "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC", "#D37295", "#499894")
+
+# By Date chart. For "All Time" every year gets its own curve (and color),
+# overlaid on a Jan-Dec axis; otherwise a single curve over the selected period.
+date_chart <- function(counts, type, period) {
+  ms <- function(d) as.numeric(as.POSIXct(as.Date(d), tz = "UTC")) * 1000
+  ch <- apexchart(auto_update = FALSE) %>%
+    ax_chart(type = type) %>%
+    ax_title("By Date") %>%
+    ax_plotOptions() %>%
+    ax_dataLabels(enabled = FALSE) %>%                   # no per-bar/point value labels (slow)
+    ax_chart(animations = list(enabled = FALSE))          # skip draw animations
+  if (identical(period, "all")) {
+    # Stacked bars: one segment per year (earliest year at the bottom, latest on top).
+    # Every year gets a value for every calendar day (0 if none) so segments stack aligned.
+    grid <- seq(as.Date("2000-01-01"), as.Date("2000-12-31"), by = "day")
+    grid_key <- format(grid, "%m-%d")
+    grid_ms <- ms(grid)
+    counts$year <- format(counts$date, "%Y")
+    counts$key <- format(counts$date, "%m-%d")
+    years <- sort(unique(counts$year))
+    series <- lapply(years, function(y) {
+      d <- counts[counts$year == y, ]
+      vals <- d$n[match(grid_key, d$key)]
+      vals[is.na(vals)] <- 0
+      list(name = y, data = purrr::map2(grid_ms, vals, ~ list(.x, .y)))
+    })
+    ch <- do.call(ax_series, c(list(ch), series))
+    ch %>%
+      ax_chart(type = "bar", stacked = TRUE) %>%
+      ax_xaxis(type = "datetime", min = ms("2000-01-01"), max = ms("2000-12-31"),
+               labels = list(format = "MMM")) %>%
+      ax_tooltip(shared = TRUE, intersect = FALSE, x = list(format = "dd MMM")) %>%
+      ax_legend(position = "top")
+  } else {
+    # Daily bars colored by month: one series per month on a full day grid (0-filled)
+    if (nrow(counts) == 0) return(ch)
+    grid <- seq(min(counts$date), max(counts$date), by = "day")
+    grid_ms <- ms(grid)
+    grid_ym <- format(grid, "%Y-%m")
+    vals_all <- counts$n[match(grid, counts$date)]
+    vals_all[is.na(vals_all)] <- 0
+    yms <- unique(grid_ym)
+    series <- lapply(yms, function(ym) {
+      v <- ifelse(grid_ym == ym, vals_all, 0)
+      list(name = format(as.Date(paste0(ym, "-01")), "%b %Y"), data = purrr::map2(grid_ms, v, ~ list(.x, .y)))
+    })
+    cols <- month_colors[as.integer(substr(yms, 6, 7))]
+    do.call(ax_series, c(list(ch), series)) %>%
+      ax_chart(type = "bar", stacked = TRUE) %>%
+      ax_colors(cols) %>%
+      ax_xaxis(type = "datetime") %>%
+      ax_tooltip(shared = FALSE, x = list(format = "dd MMM yyyy")) %>%
+      ax_legend(show = FALSE) %>%
+      set_input_selection("time")
+  }
 }
 
 server <- function(input, output, session) {
@@ -254,6 +321,9 @@ server <- function(input, output, session) {
   
   # Observers for Selection ----------------------------------------------------------
   
+  # Current focus (all / app / viewer / owner) used by the By Year overview
+  year_sel <- reactiveVal(list(f = function(d) d, label = "All Apps"))
+
   minTime <- reactiveVal(report_from)
   maxTime <- reactiveVal(report_to)
   
@@ -286,6 +356,10 @@ server <- function(input, output, session) {
   
   observeEvent(input$content, {
     appName <- as.character(input$content)
+    year_sel(list(
+      f = function(d) d %>% filter(content_guid %in% appDF$guid[appDF$title %in% appName]),
+      label = appName
+    ))
     selectedGuids <- appDF$guid[appDF$title %in% appName]
     developers <- unique(appDF$owner_guid[appDF$title %in% appName])  # exclude developer's visits
     shiny_over_time1<-reactive(
@@ -302,20 +376,7 @@ server <- function(input, output, session) {
         arrange(date)
     )
 
-    output$shiny_time <- renderApexchart(
-      apexchart(auto_update = FALSE) %>%
-        ax_chart(type = "line") %>%
-        ax_title("By Date") %>%
-        ax_plotOptions() %>%
-        ax_series(list(
-          name = "Count",
-          data = purrr::map2(shiny_over_time1()$date_disp, shiny_over_time1()$n, ~ list(.x,.y))
-        )) %>%
-        ax_xaxis(
-          type = "datetime"
-        )
-         %>% set_input_selection("time")
-    )
+    output$shiny_time <- renderApexchart(date_chart(shiny_over_time1(), "line", input$period))
     
     shiny_viewers1 <- reactive(
       data_shiny  %>%filter(content_guid %in% selectedGuids & ! user_guid %in% developers) %>%
@@ -349,6 +410,10 @@ server <- function(input, output, session) {
     
     selectedGuids <- viewerDF$content_guid[viewerDF$username==viewerName]
     userGuids <- unique(unlist(viewerDF$guid[viewerDF$username==viewerName]))
+    year_sel(list(
+      f = function(d) d %>% filter(content_guid %in% selectedGuids & user_guid %in% userGuids),
+      label = viewerName
+    ))
     shiny_over_time2<-reactive(
       data_shiny %>%
         filter(content_guid %in% selectedGuids & user_guid %in% userGuids) %>%
@@ -364,20 +429,7 @@ server <- function(input, output, session) {
         arrange(date)
     )
     
-    output$shiny_time <- renderApexchart(
-      apexchart(auto_update = FALSE) %>%
-        ax_chart(type = "bar") %>%
-        ax_title("By Date") %>%
-        ax_plotOptions() %>%
-        ax_series(list(
-          name = "Count",
-          data = purrr::map2(shiny_over_time2()$date_disp, shiny_over_time2()$n, ~ list(.x,.y))
-        )) %>%
-        ax_xaxis(
-          type = "datetime"
-        )
-      %>% set_input_selection("time")
-    )
+    output$shiny_time <- renderApexchart(date_chart(shiny_over_time2(), "bar", input$period))
     
     
     shiny_content2 <- debounce(reactive(
@@ -413,6 +465,10 @@ server <- function(input, output, session) {
   observeEvent(input$owner, {
     ownerName <- as.character(input$owner)
     selectedGuids <- unlist(appDF$guid[appDF$username==ownerName])
+    year_sel(list(
+      f = function(d) d %>% filter(content_guid %in% selectedGuids),
+      label = paste("apps of", ownerName)
+    ))
     shiny_over_time1<-reactive(
       data_shiny %>%filter(content_guid %in% selectedGuids) %>%
         safe_filter(min_date = period_range()$from, max_date = period_range()$to) %>%
@@ -427,20 +483,7 @@ server <- function(input, output, session) {
         arrange(date)
     )
     
-    output$shiny_time <- renderApexchart(
-      apexchart(auto_update = FALSE) %>%
-        ax_chart(type = "bar") %>%
-        ax_title("By Date") %>%
-        ax_plotOptions() %>%
-        ax_series(list(
-          name = "Count",
-          data = purrr::map2(shiny_over_time1()$date_disp, shiny_over_time1()$n, ~ list(.x,.y))
-        )) %>%
-        ax_xaxis(
-          type = "datetime"
-        )
-      %>% set_input_selection("time")
-    )
+    output$shiny_time <- renderApexchart(date_chart(shiny_over_time1(), "bar", input$period))
     
     shiny_viewers1 <- reactive(
       data_shiny  %>%
@@ -498,20 +541,7 @@ server <- function(input, output, session) {
     #https://rdrr.io/cran/shinyjs/man/refresh.html
     refresh()
     if (F){
-    output$shiny_time <- renderApexchart(
-      apexchart(auto_update = FALSE) %>%
-        ax_chart(type = "line") %>%
-        ax_title("By Date") %>%
-        ax_plotOptions() %>%
-        ax_series(list(
-          name = "Count",
-          data = purrr::map2(shiny_over_time()$date_disp, shiny_over_time()$n, ~ list(.x,.y))
-        )) %>%
-        ax_xaxis(
-          type = "datetime"
-        ) %>%
-        set_input_selection("time")
-    )
+    output$shiny_time <- renderApexchart(date_chart(shiny_over_time(), "line", input$period))
     
     output$shiny_content <- renderApexchart(
       apex(
@@ -544,6 +574,38 @@ server <- function(input, output, session) {
     )
     }
   })
+  # Overview panel: counts by year ("All Time") or by month (other periods) ---------
+  output$shiny_year <- renderApexchart({
+    sel <- year_sel()
+    filt <- sel$f
+    d <- as.data.frame(filt(data_shiny))
+    if (identical(input$period, "all")) {
+      tb <- table(format(d$started, "%Y"))
+      xlab <- names(tb)
+      ttl <- "By Year"
+    } else {
+      b <- period_range()
+      d <- as.data.frame(safe_filter(d, min_date = b$from, max_date = b$to))
+      tb <- table(format(d$started, "%Y-%m"))     # sorted chronologically
+      xlab <- format(as.Date(paste0(names(tb), "-01")), "%b %Y")
+      bar_cols <- month_colors[as.integer(substr(names(tb), 6, 7))]
+      ttl <- "By Month"
+    }
+    validate(need(length(tb) > 0, "No visits"))
+    counts <- data.frame(period = xlab, n = as.integer(tb), stringsAsFactors = FALSE)
+    ch <- apex(data = counts, type = "column", mapping = aes(period, n)) %>%
+      ax_title(paste0(ttl, " - ", sel$label)) %>%
+      ax_dataLabels(enabled = TRUE)
+    if (!identical(input$period, "all")) {
+      # same color per month as the By Date chart
+      ch <- ch %>%
+        ax_plotOptions(bar = bar_opts(distributed = TRUE)) %>%
+        ax_colors(bar_cols) %>%
+        ax_legend(show = FALSE)
+    }
+    ch
+  })
+
   # Admin: top 50 user list download ------------------------------------------
   is_admin <- reactive({
     # session$user is the logged-in Connect username (NULL when not logged in / local run)
@@ -552,7 +614,6 @@ server <- function(input, output, session) {
       (!is.null(session$user) && tolower(session$user) %in% stats_admins)
   })
 
-  # One real download link per app (each gets its own download output)
   top_users_csv <- function(guid) {
     b <- period_range()
     data_shiny %>%
@@ -573,6 +634,10 @@ server <- function(input, output, session) {
       head(50)
   }
 
+  # Selected app for the download dialog
+  dl_sel <- reactiveVal(NULL)   # list(guid=, title=)
+  dl_registered <- character()  # click observers already created
+
   output$adminPanel <- renderUI({
     req(is_admin())
     apps <- shiny_content()
@@ -584,22 +649,37 @@ server <- function(input, output, session) {
         lapply(seq_len(nrow(apps)), function(i) {
           guid <- apps$content_guid[i]
           ttl <- apps$title[i]
-          id <- paste0("dl_", gsub("[^A-Za-z0-9]", "_", guid))
-          output[[id]] <- downloadHandler(
-            filename = function() {
-              paste0("top50_users_", gsub("[^A-Za-z0-9_-]+", "_", ttl), "_", Sys.Date(), ".csv")
-            },
-            content = function(file) {
+          id <- paste0("dlsel_", gsub("[^A-Za-z0-9]", "_", guid))
+          if (!id %in% dl_registered) {
+            dl_registered <<- c(dl_registered, id)
+            observeEvent(input[[id]], {
               req(is_admin())
-              write.csv(top_users_csv(guid), file, row.names = FALSE)
-            },
-            contentType = "text/csv"
-          )
-          tags$li(ttl, " ", downloadLink(id, "[download top 50 user list]"))
+              dl_sel(list(guid = guid, title = ttl))
+              showModal(modalDialog(
+                title = ttl, easyClose = TRUE, size = "s",
+                p("Top 50 users by time spent, for the selected period."),
+                downloadButton("dl_top_users", "Download CSV", class = "btn-info"),
+                footer = modalButton("Close")
+              ))
+            }, ignoreInit = TRUE)
+          }
+          tags$li(ttl, " ", actionLink(id, "[download top 50 user list]"))
         })
       )
     )
   })
+
+  output$dl_top_users <- downloadHandler(
+    filename = function() {
+      sel <- dl_sel()
+      paste0("top50_users_", gsub("[^A-Za-z0-9_-]+", "_", sel$title), "_", Sys.Date(), ".csv")
+    },
+    content = function(file) {
+      req(is_admin(), dl_sel())
+      write.csv(top_users_csv(dl_sel()$guid), file, row.names = FALSE)
+    },
+    contentType = "text/csv"
+  )
 
   observeEvent(input$btnHelp,{
     shinyalert(title="Help Information", size="m",closeOnClickOutside = TRUE,
@@ -617,20 +697,7 @@ server <- function(input, output, session) {
   # Graph output ----------------------------------------------------------
   # line
   
-  output$shiny_time <- renderApexchart(
-    apexchart(auto_update = FALSE) %>%
-      ax_chart(type = "line") %>%
-      ax_title("By Date") %>%
-      ax_plotOptions() %>%
-      ax_series(list(
-        name = "Count",
-        data = purrr::map2(shiny_over_time()$date_disp, shiny_over_time()$n, ~ list(.x,.y))
-      )) %>%
-      ax_xaxis(
-        type = "datetime"
-      ) %>%
-      set_input_selection("time")
-  )
+  output$shiny_time <- renderApexchart(date_chart(shiny_over_time(), "line", input$period))
   
   output$shiny_content <- renderApexchart(
     apex(
