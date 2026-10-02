@@ -35,7 +35,7 @@ A Shiny dashboard that shows how the Shiny apps on a Posit Connect server are us
    CONNECT_SERVER=https://connect.example.org/
    CONNECT_API_KEY=your-api-key
    STATS_ADMIN=admin1,admin2
-   STATS_START_DATE=2021-01-01
+   STATS_START_DATE=2023-01-01
    ```
 
    | Variable | Meaning |
@@ -43,7 +43,7 @@ A Shiny dashboard that shows how the Shiny apps on a Posit Connect server are us
    | `CONNECT_SERVER` | URL of the Posit Connect server. |
    | `CONNECT_API_KEY` | API key of a Connect **administrator**, so every app and its usage is visible (see the FAQ). |
    | `STATS_ADMIN` | Connect usernames, separated by commas or semicolons, who may download the top-user lists. `*` means everyone: **use only for local testing**. |
-   | `STATS_START_DATE` | Optional. First day of data to load, as `YYYY-MM-DD`. Defaults to `2021-01-01`. |
+   | `STATS_START_DATE` | Optional. First day of data to load, as `YYYY-MM-DD`. Defaults to `2023-01-01`. |
 
 3. Run the app from this folder:
 
@@ -53,9 +53,11 @@ A Shiny dashboard that shows how the Shiny apps on a Posit Connect server are us
 
 ## Using the dashboard
 
+![Dashboard screenshot](DemoDashboard.png)
+
 The page has tabs along the top: **Stats** (the default, described below) and **Admin** (shown only to users in `STATS_ADMIN`; see "Top 50 user list").
 
-- **Time Period** filters all charts. Choices: This Month, Year to Date, Last 6 Months, Last 1 Year, All Time, and one entry for each previous calendar year that has data (for example 2025, 2024). The current year is covered by Year to Date. Data is fetched from 2021-01-01 (the Connect server setup); set `STATS_START_DATE` in `.env` to change the start date.
+- **Time Period** filters all charts. Choices: This Month, Year to Date, Last 6 Months, Last 1 Year, All Time, and one entry for each previous calendar year that has data (for example 2025, 2024). The current year is covered by Year to Date. Data is fetched from 2023-01-01 (the Connect server setup); set `STATS_START_DATE` in `.env` to change the start date.
 - In **All Time**, click a bar in **By Year** to switch the Time Period to that year (the current year's bar selects Year to Date). To go back, choose All Time in the dropdown or press Reset.
 - The top row is split 2/3 + 1/3:
   - **By Date** (left, 2/3) shows visits per day.
@@ -103,7 +105,6 @@ rsconnect::deployApp(
 
 | Symptom | Fix |
 |---------|-----|
-| `Argument N can't be empty` | A function call in the UI has a stray trailing comma. |
 | Admin panel does not appear on the server | The app does not require login, or the Connect username differs from `STATS_ADMIN`. |
 | Changes do not appear on the server | Redeploy and restart the app process. |
 

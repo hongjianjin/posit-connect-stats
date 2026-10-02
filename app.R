@@ -32,7 +32,7 @@ days_back <- as.numeric(Sys.getenv("DAYSBACK"))
 cache_location <- Sys.getenv("MEMOISE_CACHE_LOCATION", tempdir())
 message(cache_location)
 # Fetch everything since the Connect server was set up (override with STATS_START_DATE in .env)
-report_from <- as.Date(Sys.getenv("STATS_START_DATE", "2021-01-01"))
+report_from <- as.Date(Sys.getenv("STATS_START_DATE", "2023-01-01"))
 report_to <- lubridate::today()
 
 # TODO: better way to do caching...?
