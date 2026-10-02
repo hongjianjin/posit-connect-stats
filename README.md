@@ -1,6 +1,6 @@
-# IBEX Usage Insights
+# Posit Connect Usage Insights
 
-A Shiny dashboard that shows how the Shiny apps on the IBEX Posit Connect server are used: visits over time, and the top apps, viewers and owners. Admins can also download a top-50 user list for each app.
+A Shiny dashboard that shows how the Shiny apps on a Posit Connect server are used: visits over time, and the top apps, viewers and owners. Admins can also download a top-50 user list for each app.
 
 ## Highlights
 
@@ -14,7 +14,6 @@ A Shiny dashboard that shows how the Shiny apps on the IBEX Posit Connect server
 | File | Purpose |
 |------|---------|
 | `app.R` | The dashboard (UI + server). |
-| `run_test.R` | Stand-alone script for pulling top users from the command line. |
 | `.env` | Local settings and secrets. **Not committed** (see `.gitignore`). |
 | `.env.example` | Template for `.env`. |
 
@@ -33,7 +32,7 @@ A Shiny dashboard that shows how the Shiny apps on the IBEX Posit Connect server
 2. Copy `.env.example` to `.env` and fill in the values:
 
    ```
-   CONNECT_SERVER=http://ibex.stjude.org/
+   CONNECT_SERVER=https://connect.example.org/
    CONNECT_API_KEY=your-api-key
    STATS_ADMIN=admin1,admin2
    STATS_START_DATE=2021-01-01
@@ -84,12 +83,12 @@ An admin is identified by their Connect login, so the app must require login in 
 4. Set the app's access to require login, then restart the app process after each deployment.
 
 ```
-setwd("/home/zhanggrp/hjin/ibex_stats/")
+setwd("/path/to/this/app")
 rsconnect::deployApp(
     appDir = ".",
-    appId = "ca2384f5-255c-4a47-ab0e-b715aa0484cc",
-    account = "hjin",
-    server = "ibex.stjude.org",
+    appId = "<content-guid>",
+    account = "<rsconnect-account-name>",
+    server = "<connect-server-name>",
     forceUpdate = TRUE
 )
 
@@ -127,4 +126,4 @@ Check these:
 - **Developer visits are excluded.** Visits by an app's own owner are removed. An app that only its owner opens has no visits left.
 - **Visits under 5 seconds are excluded.**
 - **By App, By Viewer and By Owner show only the top 20** for the selected Time Period. Try All Time.
-- To see which of these applies to a specific app, set its ID in `diagnose_missing.R` and run `source("diagnose_missing.R")` from the app folder. It reports whether the key can see the app, who owns it, and how many visits remain after each filter.
+- To check a specific app directly, use `connectapi` in an R console: `connectapi::get_content(client)` to confirm the key can see it, and `connectapi::get_usage_shiny(client, content_guid = <guid>)` to inspect its raw visit records.
