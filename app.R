@@ -31,7 +31,8 @@ days_back <- as.numeric(Sys.getenv("DAYSBACK"))
 #days_back <-  as.numeric(difftime(lubridate::today(), "2022-01-01","Days"))
 cache_location <- Sys.getenv("MEMOISE_CACHE_LOCATION", tempdir())
 message(cache_location)
-report_from <- lubridate::today() - lubridate::ddays(days_back)
+# Fetch everything since the Connect server was set up (override with STATS_START_DATE in .env)
+report_from <- as.Date(Sys.getenv("STATS_START_DATE", "2021-01-01"))
 report_to <- lubridate::today()
 
 # TODO: better way to do caching...?
@@ -72,30 +73,33 @@ cached_get_content <- memoise::memoise(
 
 # Data Fetch -------------------------------------------------------------
 
-ui <- dashboardPage(
-  dashboardHeader(
-    title = "IBEX Shiny App Usage", titleWidth = 0
+ui <- fluidPage(
+  shinyjs::useShinyjs(),
+  useShinyalert(),
+  tags$head(
+    tags$title("IBEX Usage Insights"),
+    tags$style(HTML("
+      .app-title { text-align: center; font-size: 24px; font-weight: 600;
+                   padding: 12px 0 6px 0; }
+      .nav-tabs { margin-bottom: 15px; }
+    "))
   ),
-  dashboardSidebar(disable = TRUE),
-  dashboardBody(
-    tags$head(tags$style(HTML("
-      .main-sidebar, .sidebar-toggle { display: none !important; }
-      .wrapper, .content-wrapper, .right-side { margin-left: 0 !important; background-color: #ecf0f5 !important; }
-      .main-header .navbar { margin-left: 0 !important; }
-      .main-header .logo { display: none !important; }
-      .main-header .navbar:before { content: 'IBEX Shiny App Usage'; color: #fff; font-size: 20px; line-height: 50px; padding-left: 15px; }
-    "))),
+  div(class = "app-title", "IBEX Usage Insights"),
+  tabsetPanel(id = "tabs",
+    tabPanel("Stats", value = "stats",
     fluidRow(
       column(4,
         selectInput(
           "period", "Time Period:",
-          choices = c(
-            "This Month" = "month",
-            "Year to Date" = "ytd",
-            "Last 6 Months" = "6m",
-            "Last 1 Year" = "1y",
-            "All Time" = "all"
-          ),
+          choices = list(
+            "Period" = c(
+              "This Month" = "month",
+              "Year to Date" = "ytd",
+              "Last 6 Months" = "6m",
+              "Last 1 Year" = "1y",
+              "All Time" = "all"
+            )
+          ),                       # previous years are added by the server
           selected = "6m"
         )
       ),
@@ -116,31 +120,21 @@ ui <- dashboardPage(
       )
     ),
     fluidRow(
-      box(
-        apexchartOutput("shiny_content"),
-        width = 4
-      ),
-      box(
-        apexchartOutput("shiny_viewer"),
-        width = 4
-      ),
-      box(
-        apexchartOutput("shiny_owner"),
-        width = 4
-      )
+      column(3, apexchartOutput("shiny_content")),
+      column(3, apexchartOutput("shiny_unique")),
+      column(3, apexchartOutput("shiny_viewer")),
+      column(3, apexchartOutput("shiny_owner"))
     )
     ,
-    uiOutput("adminPanel"),
     fluidRow(width=12,
       column(12, align="center",
-        shinyjs::useShinyjs(),
-        useShinyalert(),
         actionButton("btnReset", label = "Reset",icon=icon("sync"), class = "btn-info" ),
         actionButton("btnHelp", label = "Help",icon=icon("question"), class = "btn-info")
-    
       )
       #verbatimTextOutput("verbatim")
     )
+    )
+    # "Admin" tab is added by the server for users listed in STATS_ADMIN
   )
 )
 
@@ -159,6 +153,12 @@ safe_filter <- function(data, min_date = NULL, max_date = NULL) {
 # Map a period selector value to a from/to Date range, bounded below by
 # `earliest` (the start of the data actually fetched from Connect).
 period_bounds <- function(period, today, earliest) {
+  # "y2025": a whole calendar year (the current year is covered by "Year to Date")
+  if (grepl("^y[0-9]{4}$", period)) {
+    yr <- as.integer(substring(period, 2))
+    return(list(from = max(as.Date(sprintf("%d-01-01", yr)), earliest),
+                to   = min(as.Date(sprintf("%d-12-31", yr)), today)))
+  }
   from <- switch(period,
     month = lubridate::floor_date(today, "month"),
     ytd   = lubridate::floor_date(today, "year"),
@@ -174,6 +174,12 @@ period_bounds <- function(period, today, earliest) {
 # By Month overview so the same month has the same color in both.
 month_colors <- c("#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F", "#EDC948",
                   "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC", "#D37295", "#499894")
+
+# One fixed color per calendar year (cycles every 10 years), shared by the All-Time
+# By Date chart and the By Year overview so a year has the same color in both.
+year_palette <- c("#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F",
+                  "#EDC948", "#B07AA1", "#FF9DA7", "#9C755F", "#BAB0AC")
+year_colors <- function(years) year_palette[as.integer(years) %% length(year_palette) + 1]
 
 # By Date chart. For "All Time" every year gets its own curve (and color),
 # overlaid on a Jan-Dec axis; otherwise a single curve over the selected period.
@@ -203,6 +209,7 @@ date_chart <- function(counts, type, period) {
     ch <- do.call(ax_series, c(list(ch), series))
     ch %>%
       ax_chart(type = "bar", stacked = TRUE) %>%
+      ax_colors(year_colors(years)) %>%
       ax_xaxis(type = "datetime", min = ms("2000-01-01"), max = ms("2000-12-31"),
                labels = list(format = "MMM")) %>%
       ax_tooltip(shared = TRUE, intersect = FALSE, x = list(format = "dd MMM")) %>%
@@ -231,6 +238,23 @@ date_chart <- function(counts, type, period) {
   }
 }
 
+# "By Unique User": apps ranked by the number of distinct viewers (anonymous visits ignored)
+unique_by_app <- function(df, content) {
+  df %>%
+    filter(!is.na(user_guid)) %>%
+    group_by(content_guid) %>%
+    summarize(n = n_distinct(user_guid), .groups = "drop") %>%
+    left_join(content %>% select(guid, title), by = c(content_guid = "guid")) %>%
+    filter(!is.na(title)) %>%
+    arrange(desc(n))
+}
+unique_chart <- function(df) {
+  apex(data = head(df, 20), type = "bar", mapping = aes(title, n), auto_update = FALSE) %>%   # full re-draw on every change
+    ax_title("By Unique User (Top 20)") %>%
+    ax_colors("#8E44AD") %>%            # purple bars
+    set_input_click("content")
+}
+
 server <- function(input, output, session) {
   
   
@@ -243,6 +267,9 @@ server <- function(input, output, session) {
   data_shiny <- data_shiny[data_shiny$ActiveSecs>5, ]  # remove visits < 5 seconds
   # data_static <- cached_usage_static(client, from = report_from, to = report_to, limit = Inf) # ~ 3 minutes on a busy server...
   data_content <- cached_get_content(client, date = report_to)
+  # Apps without a title would be dropped by the title filters below; fall back to the app name
+  data_content$title <- ifelse(is.na(data_content$title) | !nzchar(data_content$title),
+                               data_content$name, data_content$title)
   data_users <- cached_get_users(client, date = report_to, limit = Inf)
   df0 <- unique(data_content[,c("guid","title","owner_guid")])
   df1 <- unique(data_users[,c("guid","username")])
@@ -257,6 +284,28 @@ server <- function(input, output, session) {
   data_shiny <- data_shiny[ data_shiny$DevVists %in% FALSE,]
   #----------------------------------------
   delay_duration <- 500
+
+  # Previous calendar years that have data become Time Period choices
+  # (the current year is already "Year to Date").
+  yrs <- sort(unique(format(data_shiny$started, "%Y")), decreasing = TRUE)
+  yrs <- setdiff(yrs, format(report_to, "%Y"))
+  if (length(yrs) > 0) {
+    updateSelectInput(session, "period", selected = "6m", choices = list(
+      "Period" = c(
+        "This Month" = "month", "Year to Date" = "ytd", "Last 6 Months" = "6m",
+        "Last 1 Year" = "1y", "All Time" = "all"
+      ),
+      "Year" = setNames(paste0("y", yrs), yrs)
+    ))
+  }
+
+  # Clicking a bar in "By Year" selects that year as the Time Period
+  observeEvent(input$year_pick, {
+    yr <- as.character(input$year_pick)
+    updateSelectInput(session, "period",
+      selected = if (identical(yr, format(report_to, "%Y"))) "ytd" else paste0("y", yr))
+    shinyjs::runjs("Shiny.setInputValue('year_pick', null);")   # so the same bar can be clicked again later
+  })
 
   # Period-selector range, used to filter the By Date chart (not the brush selection)
   period_range <- reactive(period_bounds(input$period, report_to, report_from))
@@ -397,6 +446,7 @@ server <- function(input, output, session) {
         mapping = aes(username, n)
       ) %>%
         ax_title("By Viewer (Top 20)") %>%
+        ax_colors("#2E9E5B") %>%            # green bars
         set_input_click("viewer")
     )
     
@@ -456,6 +506,14 @@ server <- function(input, output, session) {
         ax_title("By App (Top 20)") %>%
         set_input_click("content")
     )
+
+    output$shiny_unique <- renderApexchart(
+      unique_chart(unique_by_app(
+        data_shiny %>%
+          filter(content_guid %in% selectedGuids & user_guid %in% userGuids) %>%
+          safe_filter(min_date = minTime(), max_date = maxTime()),
+        data_content))
+    )
     
     
   })
@@ -505,6 +563,7 @@ server <- function(input, output, session) {
         mapping = aes(username, n)
       ) %>%
         ax_title("By Viewer (Top 20)") %>%
+        ax_colors("#2E9E5B") %>%            # green bars
         set_input_click("viewer")
     )
     
@@ -531,6 +590,14 @@ server <- function(input, output, session) {
       ) %>%
         ax_title("By App (Top 20)") %>%
         set_input_click("content")
+    )
+
+    output$shiny_unique <- renderApexchart(
+      unique_chart(unique_by_app(
+        data_shiny %>%
+          filter(content_guid %in% selectedGuids) %>%
+          safe_filter(min_date = minTime(), max_date = maxTime()),
+        data_content))
     )
     
     
@@ -560,6 +627,7 @@ server <- function(input, output, session) {
         mapping = aes(username, n)
       ) %>%
         ax_title("By Viewer (Top 20)") %>%
+        ax_colors("#2E9E5B") %>%            # green bars
         set_input_click("viewer")
     )
     
@@ -582,6 +650,7 @@ server <- function(input, output, session) {
     if (identical(input$period, "all")) {
       tb <- table(format(d$started, "%Y"))
       xlab <- names(tb)
+      bar_cols <- year_colors(names(tb))   # same year colors as the By Date chart
       ttl <- "By Year"
     } else {
       b <- period_range()
@@ -593,11 +662,12 @@ server <- function(input, output, session) {
     }
     validate(need(length(tb) > 0, "No visits"))
     counts <- data.frame(period = xlab, n = as.integer(tb), stringsAsFactors = FALSE)
-    ch <- apex(data = counts, type = "column", mapping = aes(period, n)) %>%
+    ch <- apex(data = counts, type = "column", mapping = aes(period, n), auto_update = FALSE) %>%
       ax_title(paste0(ttl, " - ", sel$label)) %>%
       ax_dataLabels(enabled = TRUE)
-    if (!identical(input$period, "all")) {
-      # same color per month as the By Date chart
+    if (identical(input$period, "all")) ch <- ch %>% set_input_click("year_pick")
+    {
+      # same colors as the By Date chart: per month, or per year for "All Time"
       ch <- ch %>%
         ax_plotOptions(bar = bar_opts(distributed = TRUE)) %>%
         ax_colors(bar_cols) %>%
@@ -605,6 +675,16 @@ server <- function(input, output, session) {
     }
     ch
   })
+
+  # "Admin" tab: only added for users listed in STATS_ADMIN ---------------------
+  observeEvent(is_admin(), {
+    req(is_admin())
+    appendTab("tabs", tabPanel("Admin", value = "admin",
+      h3("Admin"),
+      p("Download the top 50 users for an app. Uses the Time Period selected on the Stats tab."),
+      uiOutput("adminPanel")
+    ))
+  }, once = TRUE)
 
   # Admin: top 50 user list download ------------------------------------------
   is_admin <- reactive({
@@ -699,6 +779,12 @@ server <- function(input, output, session) {
   
   output$shiny_time <- renderApexchart(date_chart(shiny_over_time(), "line", input$period))
   
+  output$shiny_unique <- renderApexchart(
+    unique_chart(unique_by_app(
+      data_shiny %>% safe_filter(min_date = minTime(), max_date = maxTime()),
+      data_content))
+  )
+
   output$shiny_content <- renderApexchart(
     apex(
       data = shiny_content() %>% head(20), 
@@ -716,6 +802,7 @@ server <- function(input, output, session) {
       mapping = aes(username, n)
     ) %>%
       ax_title("By Viewer (Top 20)") %>%
+      ax_colors("#2E9E5B") %>%            # green bars
       set_input_click("viewer")
   )
   
